@@ -1,0 +1,46 @@
+# OS Files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Gradle Build Files
+.gradle/
+build/
+**/build/
+.kotlin/
+.kotlin-daemon/
+.kotlin-compiler-output/
+*.gradle.user.properties
+
+# Android
+local.properties
+.navigation/
+captures/
+output.json
+*.apk
+*.aar
+
+# iOS & Xcode
+iosApp/build/
+iosApp/.extract/
+iosApp/Pods/
+iosApp/DerivedData/
+*.xcworkspace/
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+xcuserdata/
+
+# IDE Settings
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+
+# Desktop Distributions
+desktopApp/build/
+**/distribution/

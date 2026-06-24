@@ -1,0 +1,731 @@
+name: Build All Platform Installers (Android, iOS, Desktop)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - generate-installers
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  GRADLE_OPTS: >-
+    -Dorg.gradle.daemon=false
+    -Dorg.gradle.parallel=true
+    -Dorg.gradle.caching=true
+    -Dorg.gradle.vfs.watch=false
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          gradle-home-cache-cleanup: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Android Universal Debug APK
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3 delay=5
+            while true; do
+              echo "Attempt #$n: $*"
+              "$@" && break
+              [ $n -ge $max ] && { echo "Failed after $n attempts."; return 1; }
+              n=$((n+1)); echo "Retrying in ${delay}s..."; sleep $delay; delay=$((delay*2))
+            done
+          }
+          retry ./gradlew :androidApp:assembleDebug
+        shell: bash
+
+      - name: Upload Android packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-packages
+          path: androidApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          gradle-home-cache-cleanup: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+        shell: bash
+
+      - name: Add WiX to PATH
+        run: echo "C:\Program Files (x86)\WiX Toolset v3.11\bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Build Windows installers (EXE & MSI)
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3 delay=5
+            while true; do
+              echo "Attempt #$n: $*"
+              "$@" && break
+              [ $n -ge $max ] && { echo "Failed after $n attempts."; return 1; }
+              n=$((n+1)); echo "Retrying in ${delay}s..."; sleep $delay; delay=$((delay*2))
+            done
+          }
+          retry ./gradlew :desktopApp:packageExe :desktopApp:packageMsi
+        shell: bash
+
+      - name: Display jpackage error logs on failure
+        if: failure()
+        run: |
+          python -c "
+          import os, glob
+          log_dir = os.path.join('desktopApp', 'build', 'compose', 'logs')
+          if os.path.exists(log_dir):
+              print('=== jpackage error logs ===')
+              for f in glob.glob(os.path.join(log_dir, '**', '*-err.txt'), recursive=True):
+                  print(f'File: {f}')
+                  try:
+                      with open(f, 'r', encoding='utf-8', errors='ignore') as file:
+                          print(file.read())
+                  except Exception as e:
+                      print(f'Error reading {f}: {e}')
+              print('=== jpackage output logs ===')
+              for f in glob.glob(os.path.join(log_dir, '**', '*-out.txt'), recursive=True):
+                  print(f'File: {f}')
+                  try:
+                      with open(f, 'r', encoding='utf-8', errors='ignore') as file:
+                          print(file.read())
+                  except Exception as e:
+                      print(f'Error reading {f}: {e}')
+          else:
+              print('Log directory not found: ' + log_dir)
+          "
+        shell: bash
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            desktopApp/build/compose/binaries/main/exe/*.exe
+            desktopApp/build/compose/binaries/main/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-latest
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          gradle-home-cache-cleanup: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build macOS DMG installer
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3 delay=5
+            while true; do
+              echo "Attempt #$n: $*"
+              "$@" && break
+              [ $n -ge $max ] && { echo "Failed after $n attempts."; return 1; }
+              n=$((n+1)); echo "Retrying in ${delay}s..."; sleep $delay; delay=$((delay*2))
+            done
+          }
+          retry ./gradlew :desktopApp:packageDmg
+        shell: bash
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers-${{ matrix.arch }}
+          path: desktopApp/build/compose/binaries/main/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Build iOS Simulator App
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          
+          xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -sdk iphonesimulator -configuration Debug -derivedDataPath iosApp/build CODE_SIGNING_ALLOWED=NO
+          
+          # Debug: List what was actually built
+          echo "=== Checking build output ==="
+          if [ -d "iosApp/build/Build/Products/Debug-iphonesimulator" ]; then
+            ls -la "iosApp/build/Build/Products/Debug-iphonesimulator/"
+          else
+            echo "ERROR: Build output directory not found"
+            exit 1
+          fi
+          
+          # Find the actual app bundle
+          APP_BUNDLE=$(find "iosApp/build/Build/Products/Debug-iphonesimulator" -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "ERROR: No .app bundle found in build output"
+            find "iosApp/build/Build/Products/Debug-iphonesimulator" -type f | head -20
+            exit 1
+          fi
+          
+          echo "Found app bundle: $APP_BUNDLE"
+          REPO_ROOT=$(pwd)
+          cd "$(dirname "$APP_BUNDLE")"
+          zip -r "$REPO_ROOT/FlyingBird-ios-simulator.zip" "$(basename "$APP_BUNDLE")"
+        shell: bash
+
+      - name: Upload iOS simulator build
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator
+          path: FlyingBird-ios-simulator.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: modern
+            gradle-tasks: >-
+              :desktopApp:packageDeb
+              :desktopApp:packageRpm
+              :desktopApp:packageLinuxTarGz
+              :desktopApp:packageLinuxTarXz
+
+          - os: ubuntu-22.04
+            label: debian12-compat
+            gradle-tasks: >-
+              :desktopApp:packageDeb
+              :desktopApp:packageRpm
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          gradle-home-cache-cleanup: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Linux installers
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3 delay=5
+            while true; do
+              echo "Attempt #$n: $*"
+              "$@" && break
+              [ $n -ge $max ] && { echo "Failed after $n attempts."; return 1; }
+              n=$((n+1)); echo "Retrying in ${delay}s..."; sleep $delay; delay=$((delay*2))
+            done
+          }
+          retry ./gradlew ${{ matrix.gradle-tasks }}
+        shell: bash
+
+      - name: List AppImage build output
+        if: matrix.label == 'modern'
+        run: |
+          echo "=== Listing build output ==="
+          find desktopApp/build/compose/binaries/main -maxdepth 3 -type d 2>/dev/null || echo "Directory not found"
+          echo "=== All files ==="
+          find desktopApp/build/compose/binaries/main -maxdepth 4 -type f 2>/dev/null | head -30 || echo "No files found"
+        shell: bash
+
+      - name: Build AppImage with appimagetool
+        if: matrix.label == 'modern'
+        run: |
+          set -euo pipefail
+
+          # Find the directory containing the app launcher (bin/FlyingBird)
+          APP_ROOT=""
+          for candidate in \
+            desktopApp/build/compose/binaries/main/app-image/FlyingBird \
+            desktopApp/build/compose/binaries/main/app/FlyingBird \
+            desktopApp/build/compose/binaries/main/app-image \
+            desktopApp/build/compose/binaries/main/app; do
+            if [ -f "$candidate/bin/FlyingBird" ]; then
+              APP_ROOT="$candidate"
+              echo "Found app root at: $candidate"
+              break
+            fi
+          done
+
+          if [ -z "$APP_ROOT" ]; then
+            echo "ERROR: Could not find app launcher (bin/FlyingBird)"
+            find desktopApp/build/compose/binaries/main -type f -name "FlyingBird" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Download appimagetool
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Create AppDir from Compose output
+          APPDIR="FlyingBird.AppDir"
+          mv "$APP_ROOT" "$APPDIR"
+
+          # Create AppRun entry point
+          cat > "$APPDIR/AppRun" << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/bin/FlyingBird" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          # Create .desktop file
+          cat > "$APPDIR/flyingbird.desktop" << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Flying Bird
+          Exec=FlyingBird
+          Icon=flyingbird
+          Categories=Game;
+          Comment=Survive the fallen world. A post-apocalyptic arcade game of hope and decay.
+          EOF
+
+          # Copy icon to AppDir root (required by appimagetool)
+          cp "desktopApp/src/desktopMain/resources/AppIcon.png" "$APPDIR/flyingbird.png"
+
+          # Build .AppImage
+          OUTPUT="desktopApp/build/compose/binaries/main/FlyingBird-x86_64.AppImage"
+          UPINFO="gh-releases-zsync|maheswara660|FlyingBird|latest|*x86_64.AppImage.zsync"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage -u "$UPINFO" "$APPDIR" "$OUTPUT"
+
+          # appimagetool may place .zsync in the working directory; move it next to the AppImage
+          ZSYNC_NAME="$(basename "$OUTPUT").zsync"
+          if [ -f "$ZSYNC_NAME" ] && [ ! -f "$OUTPUT.zsync" ]; then
+            mv "$ZSYNC_NAME" "$OUTPUT.zsync"
+          fi
+
+          echo "Created AppImage and zsync:"
+          ls -lh "$OUTPUT" "$OUTPUT.zsync"
+        shell: bash
+
+      - name: Patch deb scripts for headless/WSL compatibility
+        run: |
+          set -euo pipefail
+          for deb in desktopApp/build/compose/binaries/main/deb/*.deb; do
+            [ -f "$deb" ] || continue
+            echo "Patching: $deb"
+            tmpdir=$(mktemp -d)
+            dpkg-deb -R "$deb" "$tmpdir"
+
+            for script in "$tmpdir/DEBIAN/postinst" "$tmpdir/DEBIAN/prerm" "$tmpdir/DEBIAN/postrm"; do
+              [ -f "$script" ] || continue
+              # Make xdg-desktop-menu / xdg-icon-resource / xdg-mime calls non-fatal
+              # so install/remove succeeds in headless environments (WSL, containers, servers)
+              sed -i '/xdg-desktop-menu\|xdg-icon-resource\|xdg-mime/{/|| true$/!s/$/ || true/}' "$script"
+            done
+
+            dpkg-deb -b "$tmpdir" "$deb"
+            rm -rf "$tmpdir"
+            echo "Patched successfully: $deb"
+          done
+        shell: bash
+
+      - name: Upload Linux installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers-${{ matrix.label }}
+          path: |
+            desktopApp/build/compose/binaries/main/deb/*.deb
+            desktopApp/build/compose/binaries/main/rpm/*.rpm
+            desktopApp/build/distributions/*.tar.gz
+            desktopApp/build/distributions/*.tar.xz
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Linux AppImage
+        if: matrix.label == 'modern'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: |
+            desktopApp/build/compose/binaries/main/FlyingBird-x86_64.AppImage
+            desktopApp/build/compose/binaries/main/FlyingBird-x86_64.AppImage.zsync
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Build Arch Linux package (.pkg.tar.zst)
+        if: matrix.label == 'modern'
+        run: |
+          set -euo pipefail
+
+          VERSION=$(grep 'versionName = ' androidApp/build.gradle.kts | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          PKG_NAME="flyingbird"
+          PKG_DIR="pkg-root"
+
+          # Find the app directory produced by packageAppImage
+          APP_ROOT=""
+          for candidate in \
+            desktopApp/build/compose/binaries/main/app/FlyingBird \
+            desktopApp/build/compose/binaries/main/app-image/FlyingBird; do
+            if [ -f "$candidate/bin/FlyingBird" ]; then
+              APP_ROOT="$candidate"
+              break
+            fi
+          done
+
+          # Fall back to the AppDir we created earlier if still present
+          if [ -z "$APP_ROOT" ] && [ -f "FlyingBird.AppDir/bin/FlyingBird" ]; then
+            APP_ROOT="FlyingBird.AppDir"
+          fi
+
+          if [ -z "$APP_ROOT" ]; then
+            echo "ERROR: Could not find app directory for Arch packaging"
+            exit 1
+          fi
+
+          # Build the package tree
+          mkdir -p "$PKG_DIR/opt/flyingbird"
+          cp -a "$APP_ROOT"/. "$PKG_DIR/opt/flyingbird/"
+
+          # Launcher symlink
+          mkdir -p "$PKG_DIR/usr/bin"
+          ln -s "/opt/flyingbird/bin/FlyingBird" "$PKG_DIR/usr/bin/flyingbird"
+
+          # Desktop entry
+          mkdir -p "$PKG_DIR/usr/share/applications"
+          cat > "$PKG_DIR/usr/share/applications/flyingbird.desktop" << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Flying Bird
+          Exec=/opt/flyingbird/bin/FlyingBird
+          Icon=flyingbird
+          Categories=Game;
+          Comment=Survive the fallen world. A post-apocalyptic arcade game of hope and decay.
+          StartupWMClass=flyingbird
+          EOF
+          sed -i 's/^          //' "$PKG_DIR/usr/share/applications/flyingbird.desktop"
+
+          # Icon
+          mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
+          cp "desktopApp/src/desktopMain/resources/AppIcon.png" \
+             "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/flyingbird.png"
+
+          # .PKGINFO (pacman metadata)
+          INSTALLED_SIZE=$(du -sb "$PKG_DIR" | cut -f1)
+          cat > "$PKG_DIR/.PKGINFO" << EOF
+          pkgname = ${PKG_NAME}
+          pkgver = ${VERSION}-1
+          pkgdesc = Survive the fallen world. A post-apocalyptic arcade game of hope and decay.
+          url = https://github.com/maheswara660/FlyingBird
+          builddate = $(date +%s)
+          packager = GitHub Actions
+          arch = x86_64
+          license = GPL-3.0
+          size = ${INSTALLED_SIZE}
+          depend = java-runtime>=21
+          depend = hicolor-icon-theme
+          EOF
+          sed -i 's/^          //' "$PKG_DIR/.PKGINFO"
+
+          # Create .pkg.tar.zst
+          sudo apt-get install -y zstd
+          OUTPUT_DIR="desktopApp/build/compose/binaries/main/arch"
+          mkdir -p "$OUTPUT_DIR"
+          ARCHIVE="${PKG_NAME}-${VERSION}-1-x86_64.pkg.tar.zst"
+
+          cd "$PKG_DIR"
+          tar --zstd -cf "../${OUTPUT_DIR}/${ARCHIVE}" .PKGINFO opt usr
+          cd ..
+
+          echo "Created Arch package:"
+          ls -lh "${OUTPUT_DIR}/${ARCHIVE}"
+        shell: bash
+
+      - name: Upload Arch Linux package
+        if: matrix.label == 'modern'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arch
+          path: desktopApp/build/compose/binaries/main/arch/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  release:
+    name: Draft release with all installers
+    needs: [build-android, build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Read project version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(grep 'versionName = ' androidApp/build.gradle.kts | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: could not read versionName from androidApp/build.gradle.kts"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: v$VERSION"
+        shell: bash
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files (rename arch / compat collisions)
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+
+          echo "=== Downloaded artifact tree ==="
+          find artifacts -maxdepth 4 -type f 2>/dev/null | sort
+          echo
+
+          stage() {
+            local src="$1"
+            local target_name="$2"
+            if [ -f "$src" ]; then
+              cp "$src" "release-files/$target_name"
+              echo "Staged: $target_name"
+              return 0
+            fi
+            return 1
+          }
+
+          android_count=0
+          ios_count=0
+          windows_count=0
+          macos_x64_count=0
+          macos_arm64_count=0
+          linux_modern_count=0
+          linux_debian12_count=0
+          linux_appimage_count=0
+          linux_arch_count=0
+
+          # Android (universal debug APK only)
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "FlyingBird-android-debug.apk" && android_count=$((android_count + 1)) || true
+          done < <(find artifacts/android-packages -type f -name '*.apk' 2>/dev/null)
+
+          # iOS
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "FlyingBird-ios-simulator.zip" && ios_count=$((ios_count + 1)) || true
+          done < <(find artifacts/ios-simulator -type f -name '*.zip' 2>/dev/null)
+
+          # Windows
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "$(basename "$f")" && windows_count=$((windows_count + 1)) || true
+          done < <(find artifacts/windows-installers -type f \( -name '*.exe' -o -name '*.msi' \) 2>/dev/null)
+
+          # macOS (dmg only)
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            base="$(basename "$f")"
+            ext="${base##*.}"
+            stem="${base%.*}"
+            stage "$f" "${stem}-x64.${ext}" && macos_x64_count=$((macos_x64_count + 1)) || true
+          done < <(find artifacts/macos-installers-x64 -type f -name '*.dmg'  2>/dev/null)
+
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            base="$(basename "$f")"
+            ext="${base##*.}"
+            stem="${base%.*}"
+            stage "$f" "${stem}-arm64.${ext}" && macos_arm64_count=$((macos_arm64_count + 1)) || true
+          done < <(find artifacts/macos-installers-arm64 -type f -name '*.dmg' 2>/dev/null)
+
+          # Linux modern (deb, rpm, tar.gz, tar.xz)
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "$(basename "$f")" && linux_modern_count=$((linux_modern_count + 1)) || true
+          done < <(find artifacts/linux-installers-modern -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.tar.xz' \) 2>/dev/null)
+
+          # Linux debian12-compat
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            base="$(basename "$f")"
+            ext="${base##*.}"
+            stem="${base%.*}"
+            stage "$f" "${stem}-debian12.${ext}" && linux_debian12_count=$((linux_debian12_count + 1)) || true
+          done < <(find artifacts/linux-installers-debian12-compat -type f \( -name '*.deb' -o -name '*.rpm' \) 2>/dev/null)
+
+          # Linux AppImage
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "$(basename "$f")" && linux_appimage_count=$((linux_appimage_count + 1)) || true
+          done < <(find artifacts/linux-appimage -type f \( -name '*.AppImage' -o -name '*.AppImage.zsync' \) 2>/dev/null)
+
+          # Linux Arch
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            stage "$f" "$(basename "$f")" && linux_arch_count=$((linux_arch_count + 1)) || true
+          done < <(find artifacts/linux-arch -type f -name '*.pkg.tar.zst' 2>/dev/null)
+
+          echo
+          echo "Final staged files:"
+          ls -la release-files/
+          echo
+          echo "Per-group counts: android=$android_count ios=$ios_count windows=$windows_count macos-x64=$macos_x64_count macos-arm64=$macos_arm64_count linux-modern=$linux_modern_count linux-debian12=$linux_debian12_count linux-appimage=$linux_appimage_count linux-arch=$linux_arch_count"
+
+          missing=()
+          [ "$android_count" -eq 0 ] && missing+=("Android universal APK (.apk)")
+          [ "$ios_count" -eq 0 ] && missing+=("iOS simulator build (.zip)")
+          [ "$windows_count" -eq 0 ] && missing+=("Windows installers (.exe/.msi)")
+          [ "$macos_x64_count" -eq 0 ] && missing+=("macOS x64 (.dmg)")
+          [ "$macos_arm64_count" -eq 0 ] && missing+=("macOS arm64 (.dmg)")
+          [ "$linux_modern_count" -eq 0 ] && missing+=("Linux modern (.deb/.rpm/.tar.gz/.tar.xz)")
+          [ "$linux_debian12_count" -eq 0 ] && missing+=("Linux debian12-compat (.deb/.rpm)")
+          [ "$linux_appimage_count" -eq 0 ] && missing+=("Linux AppImage (.AppImage/.zsync)")
+          [ "$linux_arch_count" -eq 0 ] && missing+=("Linux Arch (.pkg.tar.zst)")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo
+            echo "ERROR: missing artifacts for the following groups:"
+            printf "  - %s\n" "${missing[@]}"
+            echo
+            echo "Refusing to publish an incomplete release."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            is_draft=$(gh release view "$TAG" --json isDraft -q '.isDraft')
+            if [ "$is_draft" = "true" ]; then
+              echo "Draft release $TAG already exists — replacing assets via --clobber..."
+              gh release upload "$TAG" release-files/* --clobber
+            else
+              echo "ERROR: release $TAG is already PUBLISHED."
+              echo "Refusing to clobber published assets."
+              echo
+              echo "If you intended to ship a new version, bump"
+              echo "versionName in androidApp/build.gradle.kts first,"
+              echo "then push to triggers."
+              exit 1
+            fi
+          else
+            echo "Creating new draft release $TAG..."
+            gh release create "$TAG" \
+              --draft \
+              --title "$VERSION" \
+              --generate-notes \
+              release-files/*
+          fi
+        shell: bash
